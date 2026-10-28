@@ -1,0 +1,29 @@
+# Core Deep Learning & Computer Vision
+# For CUDA 12.x / 11.8 on Windows / Linux, install via:
+# pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+torch>=2.0.0
+torchvision>=0.15.0
+opencv-python>=4.8.0
+numpy>=1.23.0,<3.0.0
+scipy>=1.10.0
+pillow>=9.5.0
+scikit-image>=0.20.0
+
+# OCR Text Detection
+easyocr>=1.7.0
+
+# Video I/O and FFmpeg
+imageio>=2.31.0
+imageio-ffmpeg>=0.4.8
+
+# Web UI & Visualization
+gradio>=4.20.0
+matplotlib>=3.7.0
+
+# Utilities & Monitoring
+psutil>=5.9.0
+tqdm>=4.65.0
+requests>=2.28.0
+einops>=0.6.1
+timm>=0.9.2
+pyyaml>=6.0
