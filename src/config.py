@@ -51,6 +51,10 @@ class PipelineConfig:
     temporal_mask_stabilization: bool = True # Temporal max-pooling across adjacent frames
     temporal_window_size: int = 5        # Number of frames for temporal mask stabilization
 
+    # Multi-Modal Subtitle & Graphic Detection
+    enable_emojis: bool = True           # Detect color emojis / icons in caption zones
+    enable_stylized_fonts: bool = True   # Detect thick-stroked / stylized social media fonts
+
     # ---------------------------------------------------------
     # 3. Generative Inpainting Engine Settings
     # ---------------------------------------------------------

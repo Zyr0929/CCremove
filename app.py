@@ -141,6 +141,8 @@ def test_frame_inpaint(
     confidence,
     grain_str,
     engine_choice,
+    enable_emojis=True,
+    enable_stylized_fonts=True,
 ):
     """Runs instant single-frame detection and inpainting preview."""
     if not video_file:
@@ -162,6 +164,8 @@ def test_frame_inpaint(
         enable_grain_matching=True,
         grain_strength=float(grain_str),
         inpainting_engine=engine_choice,
+        enable_emojis=bool(enable_emojis),
+        enable_stylized_fonts=bool(enable_stylized_fonts),
     )
     pipeline = get_pipeline(config)
 
@@ -192,6 +196,8 @@ def process_full_video(
     chunk_size,
     crf_val,
     engine_choice,
+    enable_emojis=True,
+    enable_stylized_fonts=True,
     progress=gr.Progress(track_tqdm=True),
 ):
     """Executes the full 5-stage pipeline on the entire uploaded video."""
@@ -216,6 +222,8 @@ def process_full_video(
             enable_grain_matching=True,
             grain_strength=float(grain_str),
             inpainting_engine=engine_choice,
+            enable_emojis=bool(enable_emojis),
+            enable_stylized_fonts=bool(enable_stylized_fonts),
         )
         pipeline = get_pipeline(config)
 
@@ -273,6 +281,13 @@ def build_ui():
                 video_info = gr.Markdown("Upload a video to inspect specifications.")
 
                 gr.Markdown("### 2. Region of Interest (ROI) Alignment")
+                gr.Markdown("**Quick ROI Presets:**")
+                with gr.Row():
+                    btn_preset_bottom = gr.Button("📌 Standard Bottom", size="sm")
+                    btn_preset_center = gr.Button("📱 TikTok/Reels Center", size="sm", variant="secondary")
+                    btn_preset_top = gr.Button("📺 Top Banner", size="sm")
+                    btn_preset_full = gr.Button("🌐 Full Frame", size="sm")
+
                 frame_slider = gr.Slider(minimum=0, maximum=100, step=1, value=0, label="Select Frame to Inspect Subtitles")
                 
                 with gr.Row():
@@ -291,6 +306,18 @@ def build_ui():
                 )
 
                 with gr.Row():
+                    enable_emojis_cb = gr.Checkbox(
+                        value=True,
+                        label="Detect Emojis & Graphic Icons (🔥, 😂, 💀, etc.)",
+                        info="Localizes colorful emojis/stickers aligned with captions",
+                    )
+                    enable_stylized_cb = gr.Checkbox(
+                        value=True,
+                        label="Detect Stylized / Outline Fonts",
+                        info="Captures heavy outline strokes and impact social fonts",
+                    )
+
+                with gr.Row():
                     dilation_slider = gr.Slider(1, 35, value=11, step=2, label="Mask Dilation (px)", info="Increase to 11-17px to swallow drop shadows, outlines & glow")
                     conf_slider = gr.Slider(0.10, 0.90, value=0.25, step=0.05, label="OCR Confidence Threshold", info="Lower (0.20) catches faint/small text")
 
@@ -303,6 +330,7 @@ def build_ui():
                 gr.Markdown(
                     """
                     > 💡 **Anti-Residual Pro Tips:**
+                    > - **Vertical TikTok / Reels video?** Click the **📱 TikTok/Reels Center** preset above!
                     > - **Faint dark border/shadow residual?** Increase **Mask Dilation** to **13px – 17px** to fully swallow the drop shadow.
                     > - **Punctuation or faint letters missed?** Lower **Confidence Threshold** to **0.20**.
                     > - **Automatic Enhancements Active**: Outward-only distance feathering, adaptive shadow absorption, and boundary color harmonization are engaged.
@@ -335,6 +363,24 @@ def build_ui():
             outputs=[video_info, frame_slider, preview_roi],
         )
 
+        # Preset buttons
+        btn_preset_bottom.click(
+            fn=lambda: (0.72, 0.98, 0.05, 0.95),
+            outputs=[roi_top, roi_bottom, roi_left, roi_right],
+        )
+        btn_preset_center.click(
+            fn=lambda: (0.35, 0.75, 0.05, 0.95),
+            outputs=[roi_top, roi_bottom, roi_left, roi_right],
+        )
+        btn_preset_top.click(
+            fn=lambda: (0.02, 0.25, 0.05, 0.95),
+            outputs=[roi_top, roi_bottom, roi_left, roi_right],
+        )
+        btn_preset_full.click(
+            fn=lambda: (0.05, 0.95, 0.05, 0.95),
+            outputs=[roi_top, roi_bottom, roi_left, roi_right],
+        )
+
         # Update ROI overlay when sliders move
         for widget in [frame_slider, roi_top, roi_bottom, roi_left, roi_right]:
             widget.change(
@@ -349,6 +395,7 @@ def build_ui():
             inputs=[
                 video_input, frame_slider, roi_top, roi_bottom, roi_left, roi_right,
                 dilation_slider, conf_slider, grain_slider, engine_choice,
+                enable_emojis_cb, enable_stylized_cb,
             ],
             outputs=[preview_roi, preview_mask, preview_inpainted, preview_status],
         )
@@ -359,6 +406,7 @@ def build_ui():
             inputs=[
                 video_input, roi_top, roi_bottom, roi_left, roi_right,
                 dilation_slider, conf_slider, grain_slider, chunk_slider, crf_slider, engine_choice,
+                enable_emojis_cb, enable_stylized_cb,
             ],
             outputs=[output_video, render_status],
         )

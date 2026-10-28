@@ -78,6 +78,8 @@ class VideoInpaintingPipeline:
             languages=self.config.ocr_languages,
             device=self.config.device,
             confidence_thresh=self.config.ocr_confidence_thresh,
+            enable_emojis=self.config.enable_emojis,
+            enable_stylized_fonts=self.config.enable_stylized_fonts,
         )
         self.mask_generator = MaskGenerator(
             dilation_ksize=self.config.mask_dilation_kernel,
