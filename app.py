@@ -150,12 +150,30 @@ def test_frame_inpaint(
 
     video_path = video_file if isinstance(video_file, str) else video_file.name
     cap = cv2.VideoCapture(video_path)
-    cap.set(cv2.CAP_PROP_POS_FRAMES, int(frame_idx))
-    ret, frame_bgr = cap.read()
-    cap.release()
+    total_f = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    idx = int(frame_idx)
 
+    # Read target frame
+    cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+    ret, frame_bgr = cap.read()
     if not ret or frame_bgr is None:
+        cap.release()
         return None, None, None, f"Could not read frame {frame_idx}"
+
+    # Read adjacent frames for temporal mask stabilization if possible
+    adjacent_frames = []
+    if idx > 0:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, idx - 1)
+        r_p, f_p = cap.read()
+        if r_p and f_p is not None:
+            adjacent_frames.append(f_p)
+    adjacent_frames.append(frame_bgr)
+    if idx < max(0, total_f - 1):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, idx + 1)
+        r_n, f_n = cap.read()
+        if r_n and f_n is not None:
+            adjacent_frames.append(f_n)
+    cap.release()
 
     config = PipelineConfig(
         roi_normalized=(roi_top, roi_bottom, roi_left, roi_right),
@@ -174,6 +192,7 @@ def test_frame_inpaint(
         roi_normalized=(roi_top, roi_bottom, roi_left, roi_right),
         dilation_override=int(dilation_px),
         confidence_override=float(confidence),
+        adjacent_frames=adjacent_frames if len(adjacent_frames) > 1 else None,
     )
 
     before_rgb = cv2.cvtColor(res["roi_preview"], cv2.COLOR_BGR2RGB)

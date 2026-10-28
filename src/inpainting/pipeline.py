@@ -103,23 +103,17 @@ class VideoInpaintingPipeline:
         roi_normalized: Optional[tuple] = None,
         dilation_override: Optional[int] = None,
         confidence_override: Optional[float] = None,
+        adjacent_frames: Optional[List[np.ndarray]] = None,
     ) -> Dict[str, Any]:
         """
         Runs OCR text detection, mask generation, and high-resolution inpainting
         on a single preview frame.
-        
-        Returns:
-            Dict containing:
-            - 'original': Original frame
-            - 'roi_preview': Frame with ROI box overlay
-            - 'mask': Binary dilated text mask
-            - 'inpainted': Final cleaned frame with feathered alpha blend and grain matching
-            - 'detected_count': Number of text boxes detected
+        Optionally uses adjacent_frames for temporal mask stabilization.
         """
         roi = roi_normalized or self.config.roi_normalized
         h, w = frame_bgr.shape[:2]
 
-        # 1. Detect text
+        # 1. Detect text on target frame
         detections = self.detector.detect(
             frame_bgr=frame_bgr,
             roi_normalized=roi,
@@ -133,6 +127,26 @@ class VideoInpaintingPipeline:
             frame_bgr=frame_bgr,
             dilation_override=dilation_override,
         )
+
+        # 2b. Temporal mask stabilization if adjacent frames provided
+        if adjacent_frames and len(adjacent_frames) > 1 and self.config.temporal_mask_stabilization:
+            window_masks = []
+            for f in adjacent_frames:
+                if f is frame_bgr:
+                    window_masks.append(mask)
+                else:
+                    d = self.detector.detect(f, roi_normalized=roi, confidence_override=confidence_override)
+                    m = self.mask_generator.generate_single_mask(
+                        frame_shape=(h, w),
+                        detections=d,
+                        frame_bgr=f,
+                        dilation_override=dilation_override,
+                    )
+                    window_masks.append(m)
+            stabilized = self.mask_generator.stabilize_masks_temporal(window_masks, window_size=3)
+            # Find index of target frame
+            target_idx = adjacent_frames.index(frame_bgr) if frame_bgr in adjacent_frames else (len(adjacent_frames) // 2)
+            mask = stabilized[target_idx]
 
         # 3. Create ROI preview overlay
         roi_vis = frame_bgr.copy()

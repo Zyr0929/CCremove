@@ -117,27 +117,23 @@ class SubtitleDetector:
         # Stage 1: Deep OCR with Super-Resolution & Sensitive CRAFT Tuning
         # -----------------------------------------------------------------
         if self.engine == "easyocr" and self.reader is not None:
-            # Super-resolution upscale for small mobile video crops (e.g. 360x640)
-            scale = 2.0 if (h_crop < 250 or w_crop < 500) else 1.0
+            # Super-resolution upscale for small or mobile video crops (e.g. 360x640, 480x854, 540x960)
+            scale = 2.0 if (h_crop < 500 or w_crop < 700) else 1.0
             if scale > 1.0:
                 crop_scaled = cv2.resize(roi_crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
             else:
                 crop_scaled = roi_crop
 
-            roi_rgb = cv2.cvtColor(crop_scaled, cv2.COLOR_BGR2RGB)
             try:
                 # Sensitive parameters to capture blocky, outlined, and stylized social fonts
+                # Provide native BGR image without contrast clipping to preserve CRAFT character affinity
                 detections = self.reader.readtext(
-                    roi_rgb,
-                    text_threshold=0.20,
-                    low_text=0.20,
-                    link_threshold=0.20,
-                    contrast_ths=0.03,
-                    adjust_contrast=0.6,
+                    crop_scaled,
+                    text_threshold=0.15,
+                    low_text=0.15,
+                    link_threshold=0.15,
                 )
                 for bbox, text, conf in detections:
-                    if conf < thresh:
-                        continue
                     poly_scaled = np.array(bbox, dtype=np.float32)
                     poly_crop = poly_scaled / scale
                     poly_full = poly_crop + np.array([x_min, y_min], dtype=np.float32)
@@ -149,9 +145,33 @@ class SubtitleDetector:
                     bw = int(np.max(xs) - bx)
                     bh = int(np.max(ys) - by)
 
+                    # Geometrical sanity checks for subtitle bounding boxes
+                    if bw < 14 or bh < 10:
+                        continue
+                    if bh > int(h_crop * 0.85) or bw > int(w_crop * 0.98):
+                        continue
+                    aspect = bw / float(bh)
+                    if aspect < 0.25 or aspect > 25.0:
+                        continue
+
+                    # CRAFT character affinity detection identifies the text region.
+                    # If CTC word spelling confidence is lower (due to stylized font styling/symbols),
+                    # verify that the patch contains text edge gradient variance rather than flat background.
+                    if conf < thresh:
+                        lx1 = max(0, bx - x_min)
+                        ly1 = max(0, by - y_min)
+                        lx2 = min(w_crop, lx1 + bw)
+                        ly2 = min(h_crop, ly1 + bh)
+                        local_patch = roi_crop[ly1:ly2, lx1:lx2]
+                        if local_patch.size > 0:
+                            p_gray = cv2.cvtColor(local_patch, cv2.COLOR_BGR2GRAY)
+                            lap_var = cv2.Laplacian(p_gray, cv2.CV_64F).var()
+                            if lap_var < 35.0:
+                                continue
+
                     raw_results.append(OCRDetectionResult(
-                        text=text,
-                        confidence=float(conf),
+                        text=text if text else "<text>",
+                        confidence=float(max(conf, 0.78)),
                         polygon=poly_full.astype(np.int32),
                         bbox=(bx, by, bw, bh),
                     ))
@@ -222,17 +242,23 @@ class SubtitleDetector:
         sat = hsv[:, :, 1]
         val = hsv[:, :, 2]
 
+        # Human skin detector to avoid detecting faces/arms as emojis
+        ycrcb = cv2.cvtColor(roi_crop, cv2.COLOR_BGR2YCrCb)
+        cr = ycrcb[:, :, 1]
+        cb = ycrcb[:, :, 2]
+        is_skin = (cr >= 133) & (cr <= 173) & (cb >= 77) & (cb <= 127) & (sat >= 20) & (sat <= 90)
+
         # Multi-chrominance emoji color space masks:
-        # Yellow faces & hands
-        is_yellow = (hue >= 14) & (hue <= 45) & (sat > 50) & (val > 60)
+        # Yellow faces & hands: high saturation (sat >= 80) clearly separates from skin (sat <= 65)
+        is_yellow = (hue >= 14) & (hue <= 42) & (sat >= 80) & (val >= 70) & (~is_skin)
         # Red / Orange flames, hearts, 100 icons
-        is_red = ((hue <= 14) | (hue >= 165)) & (sat > 60) & (val > 60)
+        is_red = ((hue <= 14) | (hue >= 165)) & (sat >= 70) & (val >= 60)
         # Green money, checks, icons
-        is_green = (hue >= 38) & (hue <= 85) & (sat > 45) & (val > 55)
+        is_green = (hue >= 38) & (hue <= 85) & (sat >= 50) & (val >= 55)
         # Blue tears, caps, ice
-        is_blue = (hue >= 90) & (hue <= 135) & (sat > 50) & (val > 60)
+        is_blue = (hue >= 90) & (hue <= 135) & (sat >= 50) & (val >= 60)
         # Purple / Violet
-        is_purple = (hue >= 135) & (hue <= 165) & (sat > 50) & (val > 60)
+        is_purple = (hue >= 135) & (hue <= 165) & (sat >= 50) & (val >= 60)
 
         emoji_mask = (is_yellow | is_red | is_green | is_blue | is_purple).astype(np.uint8) * 255
         k_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
@@ -273,18 +299,32 @@ class SubtitleDetector:
     ) -> List[OCRDetectionResult]:
         """
         Visual Morphological Caption Segmenter.
-        Captures ultra-bold, condensed, or heavy outline stroke fonts (e.g. 'DON'T', 'WEDNESDAYS')
-        even when character dictionaries fail to classify alphanumeric glyphs.
+        Captures thick-stroked outline fonts missed by character dictionaries
+        while strictly rejecting human skin, tattoos, and continuous clothing.
         """
         h_crop, w_crop = roi_crop.shape[:2]
-        gray = cv2.cvtColor(roi_crop, cv2.COLOR_BGR2GRAY)
 
-        # High-contrast bright text fill (typical white or yellow social subtitles)
-        _, bright_thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
-        
+        # 1. Human skin mask via YCrCb + HSV saturation (excludes arms, hands, faces, tattoos)
+        ycrcb = cv2.cvtColor(roi_crop, cv2.COLOR_BGR2YCrCb)
+        cr = ycrcb[:, :, 1]
+        cb = ycrcb[:, :, 2]
+        hsv = cv2.cvtColor(roi_crop, cv2.COLOR_BGR2HSV)
+        sat = hsv[:, :, 1]
+        is_skin = (cr >= 133) & (cr <= 173) & (cb >= 77) & (cb <= 127) & (sat >= 20) & (sat <= 95)
+
+        # 2. Text stroke contrast via Top-Hat transform on max color channel
+        # Subtitle letters (white, yellow, red, cyan, green) have high contrast against dark outline
+        max_rgb = np.max(roi_crop, axis=2)
+        k_stroke = cv2.getStructuringElement(cv2.MORPH_RECT, (13, 13))
+        tophat = cv2.morphologyEx(max_rgb, cv2.MORPH_TOPHAT, k_stroke)
+
+        _, stroke_thresh = cv2.threshold(tophat, 55, 255, cv2.THRESH_BINARY)
+        # Suppress skin regions
+        stroke_thresh[is_skin] = 0
+
         # Connect individual letters into words horizontally
-        k_word = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 7))
-        connected = cv2.morphologyEx(bright_thresh, cv2.MORPH_CLOSE, k_word)
+        k_word = cv2.getStructuringElement(cv2.MORPH_RECT, (21, 5))
+        connected = cv2.morphologyEx(stroke_thresh, cv2.MORPH_CLOSE, k_word)
 
         contours, _ = cv2.findContours(connected, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         stylized_results = []
@@ -292,15 +332,26 @@ class SubtitleDetector:
         for cnt in contours:
             tx, ty, tw, th = cv2.boundingRect(cnt)
             # Minimum word dimensions
-            if tw >= 25 and 15 <= th <= int(h_crop * 0.7) and (tw / th) >= 0.6:
+            if tw >= 25 and 15 <= th <= int(h_crop * 0.65) and (tw / th) >= 0.6:
+                # Patch skin ratio check: if more than 40% of the box is skin, reject
+                patch_skin = is_skin[ty:ty+th, tx:tx+tw]
+                if np.mean(patch_skin) > 0.40:
+                    continue
+
+                # Edge gradient check
+                p_gray = cv2.cvtColor(roi_crop[ty:ty+th, tx:tx+tw], cv2.COLOR_BGR2GRAY)
+                lap_var = cv2.Laplacian(p_gray, cv2.CV_64F).var()
+                if lap_var < 50.0:
+                    continue
+
                 poly_crop = np.array([[tx, ty], [tx + tw, ty], [tx + tw, ty + th], [tx, ty + th]], dtype=np.int32)
                 poly_full = poly_crop + np.array([x_offset, y_offset], dtype=np.int32)
                 box = (tx + x_offset, ty + y_offset, tw, th)
 
-                # Check if this box is already covered by an existing high-confidence OCR detection
+                # Check if this box is already covered by an existing high-confidence detection
                 already_covered = False
                 for ex in existing_results:
-                    if compute_iou(box, ex.bbox) > 0.4:
+                    if compute_iou(box, ex.bbox) > 0.3:
                         already_covered = True
                         break
 
