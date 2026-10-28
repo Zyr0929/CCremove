@@ -131,9 +131,11 @@ class VideoInpaintingPipeline:
         # 2b. Temporal mask stabilization if adjacent frames provided
         if adjacent_frames and len(adjacent_frames) > 1 and self.config.temporal_mask_stabilization:
             window_masks = []
-            for f in adjacent_frames:
+            target_idx = 0
+            for i, f in enumerate(adjacent_frames):
                 if f is frame_bgr:
                     window_masks.append(mask)
+                    target_idx = i
                 else:
                     d = self.detector.detect(f, roi_normalized=roi, confidence_override=confidence_override)
                     m = self.mask_generator.generate_single_mask(
@@ -144,8 +146,6 @@ class VideoInpaintingPipeline:
                     )
                     window_masks.append(m)
             stabilized = self.mask_generator.stabilize_masks_temporal(window_masks, window_size=3)
-            # Find index of target frame
-            target_idx = adjacent_frames.index(frame_bgr) if frame_bgr in adjacent_frames else (len(adjacent_frames) // 2)
             mask = stabilized[target_idx]
 
         # 3. Create ROI preview overlay

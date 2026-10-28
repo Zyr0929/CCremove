@@ -148,59 +148,67 @@ def test_frame_inpaint(
     if not video_file:
         return None, None, None, "Please upload a video first."
 
-    video_path = video_file if isinstance(video_file, str) else video_file.name
-    cap = cv2.VideoCapture(video_path)
-    total_f = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    idx = int(frame_idx)
+    try:
+        video_path = video_file if isinstance(video_file, str) else video_file.name
+        cap = cv2.VideoCapture(video_path)
+        total_f = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        idx = int(frame_idx)
 
-    # Read target frame
-    cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-    ret, frame_bgr = cap.read()
-    if not ret or frame_bgr is None:
+        # Read target frame
+        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        ret, frame_bgr = cap.read()
+        if not ret or frame_bgr is None:
+            cap.release()
+            return None, None, None, f"Could not read frame {frame_idx}"
+
+        # Read adjacent frames for temporal mask stabilization if possible
+        adjacent_frames = []
+        if idx > 0:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, idx - 1)
+            r_p, f_p = cap.read()
+            if r_p and f_p is not None:
+                adjacent_frames.append(f_p)
+        adjacent_frames.append(frame_bgr)
+        if idx < max(0, total_f - 1):
+            cap.set(cv2.CAP_PROP_POS_FRAMES, idx + 1)
+            r_n, f_n = cap.read()
+            if r_n and f_n is not None:
+                adjacent_frames.append(f_n)
         cap.release()
-        return None, None, None, f"Could not read frame {frame_idx}"
 
-    # Read adjacent frames for temporal mask stabilization if possible
-    adjacent_frames = []
-    if idx > 0:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, idx - 1)
-        r_p, f_p = cap.read()
-        if r_p and f_p is not None:
-            adjacent_frames.append(f_p)
-    adjacent_frames.append(frame_bgr)
-    if idx < max(0, total_f - 1):
-        cap.set(cv2.CAP_PROP_POS_FRAMES, idx + 1)
-        r_n, f_n = cap.read()
-        if r_n and f_n is not None:
-            adjacent_frames.append(f_n)
-    cap.release()
+        config = PipelineConfig(
+            roi_normalized=(roi_top, roi_bottom, roi_left, roi_right),
+            mask_dilation_kernel=int(dilation_px),
+            ocr_confidence_thresh=float(confidence),
+            enable_grain_matching=True,
+            grain_strength=float(grain_str),
+            inpainting_engine=engine_choice,
+            enable_emojis=bool(enable_emojis),
+            enable_stylized_fonts=bool(enable_stylized_fonts),
+        )
+        pipeline = get_pipeline(config)
 
-    config = PipelineConfig(
-        roi_normalized=(roi_top, roi_bottom, roi_left, roi_right),
-        mask_dilation_kernel=int(dilation_px),
-        ocr_confidence_thresh=float(confidence),
-        enable_grain_matching=True,
-        grain_strength=float(grain_str),
-        inpainting_engine=engine_choice,
-        enable_emojis=bool(enable_emojis),
-        enable_stylized_fonts=bool(enable_stylized_fonts),
-    )
-    pipeline = get_pipeline(config)
+        res = pipeline.preview_single_frame(
+            frame_bgr=frame_bgr,
+            roi_normalized=(roi_top, roi_bottom, roi_left, roi_right),
+            dilation_override=int(dilation_px),
+            confidence_override=float(confidence),
+            adjacent_frames=adjacent_frames if len(adjacent_frames) > 1 else None,
+        )
 
-    res = pipeline.preview_single_frame(
-        frame_bgr=frame_bgr,
-        roi_normalized=(roi_top, roi_bottom, roi_left, roi_right),
-        dilation_override=int(dilation_px),
-        confidence_override=float(confidence),
-        adjacent_frames=adjacent_frames if len(adjacent_frames) > 1 else None,
-    )
+        before_rgb = cv2.cvtColor(res["roi_preview"], cv2.COLOR_BGR2RGB)
+        mask_rgb = cv2.cvtColor(res["mask"], cv2.COLOR_GRAY2RGB)
+        after_rgb = cv2.cvtColor(res["inpainted"], cv2.COLOR_BGR2RGB)
 
-    before_rgb = cv2.cvtColor(res["roi_preview"], cv2.COLOR_BGR2RGB)
-    mask_rgb = cv2.cvtColor(res["mask"], cv2.COLOR_GRAY2RGB)
-    after_rgb = cv2.cvtColor(res["inpainted"], cv2.COLOR_BGR2RGB)
+        status_msg = f"✓ Detected {res['detected_count']} subtitle text line(s). Inpainted with {engine_choice}."
+        return before_rgb, mask_rgb, after_rgb, status_msg
 
-    status_msg = f"✓ Detected {res['detected_count']} subtitle text line(s). Inpainted with {engine_choice}."
-    return before_rgb, mask_rgb, after_rgb, status_msg
+    except Exception as e:
+        import traceback
+        err_msg = traceback.format_exc()
+        print(f"\n[ERROR in test_frame_inpaint] {err_msg}\n")
+        fb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB) if 'frame_bgr' in locals() and frame_bgr is not None else None
+        return fb, None, None, f"⚠️ Error during frame inpaint preview: {str(e)}"
 
 
 def process_full_video(
